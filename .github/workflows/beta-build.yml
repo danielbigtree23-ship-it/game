@@ -1,0 +1,142 @@
+name: Build Terrain3D Walk Beta
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "beta-*"
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      source_release_tag:
+        description: "Тег релиза, из которого скачивать исходный ZIP"
+        required: true
+        default: "source-archive"
+        type: string
+      source_archive_name:
+        description: "Точное имя ZIP-файла в исходном GitHub Release"
+        required: true
+        default: "Terrain3D_Walk_Beta_Starter.zip"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Download source and export Windows/Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Godot and export templates
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+
+      - name: Show Godot version
+        run: godot --version
+
+      - name: Download source archive from GitHub Releases
+        id: source
+        env:
+          GH_TOKEN: \${{ github.token }}
+          SOURCE_RELEASE_TAG: \${{ github.event.inputs.source_release_tag || 'source-archive' }}
+          SOURCE_ARCHIVE_NAME: \${{ github.event.inputs.source_archive_name || 'Terrain3D_Walk_Beta_Starter.zip' }}
+        run: |
+          set -euo pipefail
+
+          DOWNLOAD_DIR="$RUNNER_TEMP/source-download"
+          EXTRACT_DIR="$RUNNER_TEMP/source-extracted"
+          mkdir -p "$DOWNLOAD_DIR" "$EXTRACT_DIR"
+
+          if ! gh release view "$SOURCE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error title=Missing source release::Create and publish a GitHub Release with tag '$SOURCE_RELEASE_TAG', then attach '$SOURCE_ARCHIVE_NAME'."
+            exit 1
+          fi
+
+          echo "Downloading '$SOURCE_ARCHIVE_NAME' from release '$SOURCE_RELEASE_TAG'..."
+          gh release download "$SOURCE_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$SOURCE_ARCHIVE_NAME" \
+            --dir "$DOWNLOAD_DIR"
+
+          ARCHIVE_PATH="$DOWNLOAD_DIR/$SOURCE_ARCHIVE_NAME"
+          test -s "$ARCHIVE_PATH"
+          unzip -tq "$ARCHIVE_PATH"
+          unzip -q "$ARCHIVE_PATH" -d "$EXTRACT_DIR"
+
+          PROJECT_FILE="$(find "$EXTRACT_DIR" -type f -name project.godot -print -quit)"
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: project.godot was not found inside the source archive."
+            echo "Check that the release asset contains the Godot project, not another ZIP or a wrapper folder without the project."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Godot project found at: $PROJECT_DIR"
+          du -h "$ARCHIVE_PATH"
+
+      - name: Import project resources
+        env:
+          PROJECT_DIR: \${{ steps.source.outputs.project_dir }}
+        run: godot --headless --editor --path "$PROJECT_DIR" --import --quit
+
+      - name: Export Windows build
+        env:
+          PROJECT_DIR: \${{ steps.source.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/windows
+          godot --headless --path "$PROJECT_DIR" --export-release "Windows Desktop" "$GITHUB_WORKSPACE/build/windows/Terrain3D-Walk-Beta.exe"
+          test -s build/windows/Terrain3D-Walk-Beta.exe
+          test -s build/windows/Terrain3D-Walk-Beta.pck
+
+      - name: Export Linux build
+        env:
+          PROJECT_DIR: \${{ steps.source.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux
+          godot --headless --path "$PROJECT_DIR" --export-release "Linux/X11" "$GITHUB_WORKSPACE/build/linux/Terrain3D-Walk-Beta.x86_64"
+          test -s build/linux/Terrain3D-Walk-Beta.x86_64
+          test -s build/linux/Terrain3D-Walk-Beta.pck
+          chmod +x build/linux/Terrain3D-Walk-Beta.x86_64
+
+      - name: Package builds
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          (cd build/windows && zip -qr "$GITHUB_WORKSPACE/dist/Terrain3D-Walk-Beta-Windows.zip" .)
+          (cd build/linux && zip -qr "$GITHUB_WORKSPACE/dist/Terrain3D-Walk-Beta-Linux.zip" .)
+          ls -lh dist
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Terrain3D-Walk-Beta-Windows
+          path: dist/Terrain3D-Walk-Beta-Windows.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Linux build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Terrain3D-Walk-Beta-Linux
+          path: dist/Terrain3D-Walk-Beta-Linux.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish prerelease on beta tag
+        if: startsWith(github.ref, 'refs/tags/beta-')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Terrain3D Walk \${{ github.ref_name }}
+          tag_name: \${{ github.ref_name }}
+          prerelease: true
+          files: |
+            dist/Terrain3D-Walk-Beta-Windows.zip
+            dist/Terrain3D-Walk-Beta-Linux.zip
