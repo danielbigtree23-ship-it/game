@@ -1,12 +1,8 @@
 name: Build Terrain3D Walk Beta
 
 on:
-  push:
-    branches: [main, master]
-    tags:
-      - "beta-*"
-  pull_request:
-    branches: [main, master]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       source_release_tag:
@@ -25,6 +21,8 @@ permissions:
 
 jobs:
   build:
+    # The source release starts the build; publishing a beta prerelease does not.
+    if: github.event_name != 'release' || github.event.release.tag_name == 'source-archive'
     name: Download source and export Windows/Linux
     runs-on: ubuntu-latest
 
